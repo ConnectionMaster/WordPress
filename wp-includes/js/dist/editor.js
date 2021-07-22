@@ -785,6 +785,7 @@ __webpack_require__.d(__webpack_exports__, "EditorKeyboardShortcutsRegister", fu
 __webpack_require__.d(__webpack_exports__, "EditorHistoryRedo", function() { return /* reexport */ editor_history_redo; });
 __webpack_require__.d(__webpack_exports__, "EditorHistoryUndo", function() { return /* reexport */ editor_history_undo; });
 __webpack_require__.d(__webpack_exports__, "EditorNotices", function() { return /* reexport */ editor_notices; });
+__webpack_require__.d(__webpack_exports__, "EditorSnackbars", function() { return /* reexport */ EditorSnackbars; });
 __webpack_require__.d(__webpack_exports__, "EntitiesSavedStates", function() { return /* reexport */ EntitiesSavedStates; });
 __webpack_require__.d(__webpack_exports__, "ErrorBoundary", function() { return /* reexport */ error_boundary; });
 __webpack_require__.d(__webpack_exports__, "LocalAutosaveMonitor", function() { return /* reexport */ local_autosave_monitor; });
@@ -938,7 +939,7 @@ __webpack_require__.d(selectors_namespaceObject, "isPermalinkEditable", function
 __webpack_require__.d(selectors_namespaceObject, "getPermalink", function() { return getPermalink; });
 __webpack_require__.d(selectors_namespaceObject, "getEditedPostSlug", function() { return getEditedPostSlug; });
 __webpack_require__.d(selectors_namespaceObject, "getPermalinkParts", function() { return getPermalinkParts; });
-__webpack_require__.d(selectors_namespaceObject, "isPostLocked", function() { return isPostLocked; });
+__webpack_require__.d(selectors_namespaceObject, "isPostLocked", function() { return selectors_isPostLocked; });
 __webpack_require__.d(selectors_namespaceObject, "isPostSavingLocked", function() { return selectors_isPostSavingLocked; });
 __webpack_require__.d(selectors_namespaceObject, "isPostAutosavingLocked", function() { return isPostAutosavingLocked; });
 __webpack_require__.d(selectors_namespaceObject, "isPostLockTakeover", function() { return isPostLockTakeover; });
@@ -1711,11 +1712,11 @@ function getWPAdminURL(page, query) {
  * This replicates some of what sanitize_title() does in WordPress core, but
  * is only designed to approximate what the slug will be.
  *
- * Converts Latin-1 Supplement and Latin Extended-A letters to basic Latin
- * letters. Removes combining diacritical marks. Converts whitespace, periods,
+ * Converts Latin-1 Supplement and Latin Extended-A letters to basic Latin letters.
+ * Removes combining diacritical marks. Converts whitespace, periods,
  * and forward slashes to hyphens. Removes any remaining non-word characters
- * except hyphens. Converts remaining string to lowercase. It does not account
- * for octets, HTML entities, or other encoded characters.
+ * except hyphens and underscores. Converts remaining string to lowercase.
+ * It does not account for octets, HTML entities, or other encoded characters.
  *
  * @param {string} string Title or slug to be processed
  *
@@ -1727,7 +1728,7 @@ function cleanForSlug(string) {
     return '';
   }
 
-  return Object(external_lodash_["trim"])(Object(external_lodash_["deburr"])(string).replace(/[\s\./]+/g, '-').replace(/[^\w-]+/g, '').toLowerCase(), '-');
+  return Object(external_lodash_["trim"])(Object(external_lodash_["deburr"])(string).replace(/[\s\./]+/g, '-').replace(/[^\p{L}\p{N}_-]+/gu, '').toLowerCase(), '-');
 }
 
 // EXTERNAL MODULE: external ["wp","primitives"]
@@ -2784,7 +2785,7 @@ function getPermalinkParts(state) {
  * @return {boolean} Is locked.
  */
 
-function isPostLocked(state) {
+function selectors_isPostLocked(state) {
   return state.postLock.isLocked;
 }
 /**
@@ -4967,9 +4968,6 @@ function EditorNotices({
     isDismissible: false,
     type: 'default'
   });
-  const snackbarNotices = Object(external_lodash_["filter"])(notices, {
-    type: 'snackbar'
-  });
   return Object(external_wp_element_["createElement"])(external_wp_element_["Fragment"], null, Object(external_wp_element_["createElement"])(external_wp_components_["NoticeList"], {
     notices: nonDismissibleNotices,
     className: "components-editor-notices__pinned"
@@ -4977,17 +4975,42 @@ function EditorNotices({
     notices: dismissibleNotices,
     className: "components-editor-notices__dismissible",
     onRemove: onRemove
-  }, Object(external_wp_element_["createElement"])(template_validation_notice, null)), Object(external_wp_element_["createElement"])(external_wp_components_["SnackbarList"], {
-    notices: snackbarNotices,
-    className: "components-editor-notices__snackbar",
-    onRemove: onRemove
-  }));
+  }, Object(external_wp_element_["createElement"])(template_validation_notice, null)));
 }
 /* harmony default export */ var editor_notices = (Object(external_wp_compose_["compose"])([Object(external_wp_data_["withSelect"])(select => ({
   notices: select(external_wp_notices_["store"]).getNotices()
 })), Object(external_wp_data_["withDispatch"])(dispatch => ({
   onRemove: dispatch(external_wp_notices_["store"]).removeNotice
 }))])(EditorNotices));
+
+// CONCATENATED MODULE: ./node_modules/@wordpress/editor/build-module/components/editor-snackbars/index.js
+
+
+/**
+ * External dependencies
+ */
+
+/**
+ * WordPress dependencies
+ */
+
+
+
+
+function EditorSnackbars() {
+  const notices = Object(external_wp_data_["useSelect"])(select => select(external_wp_notices_["store"]).getNotices(), []);
+  const {
+    removeNotice
+  } = Object(external_wp_data_["useDispatch"])(external_wp_notices_["store"]);
+  const snackbarNotices = Object(external_lodash_["filter"])(notices, {
+    type: 'snackbar'
+  });
+  return Object(external_wp_element_["createElement"])(external_wp_components_["SnackbarList"], {
+    notices: snackbarNotices,
+    className: "components-editor-notices__snackbar",
+    onRemove: removeNotice
+  });
+}
 
 // EXTERNAL MODULE: ./node_modules/@wordpress/icons/build-module/library/close.js
 var library_close = __webpack_require__("w95h");
@@ -7014,10 +7037,12 @@ class post_preview_button_PostPreviewButton extends external_wp_element_["Compon
     // https://html.spec.whatwg.org/multipage/interaction.html#dom-window-focus
 
 
-    this.previewWindow.focus(); // If we don't need to autosave the post before previewing, then we simply
-    // load the Preview URL in the Preview tab.
+    this.previewWindow.focus();
 
-    if (!this.props.isAutosaveable) {
+    if ( // If we don't need to autosave the post before previewing, then we simply
+    // load the Preview URL in the Preview tab.
+    !this.props.isAutosaveable || // Do not save or overwrite the post, if the post is already locked.
+    this.props.isPostLocked) {
       this.setPreviewWindowLink(event.target.href);
       return;
     } // Request an autosave. This happens asynchronously and causes the component
@@ -7080,7 +7105,8 @@ class post_preview_button_PostPreviewButton extends external_wp_element_["Compon
     getEditedPostAttribute,
     isEditedPostSaveable,
     isEditedPostAutosaveable,
-    getEditedPostPreviewLink
+    getEditedPostPreviewLink,
+    isPostLocked
   } = select('core/editor');
   const {
     getPostType
@@ -7094,7 +7120,8 @@ class post_preview_button_PostPreviewButton extends external_wp_element_["Compon
     isSaveable: isEditedPostSaveable(),
     isAutosaveable: forceIsAutosaveable || isEditedPostAutosaveable(),
     isViewable: Object(external_lodash_["get"])(postType, ['viewable'], false),
-    isDraft: ['draft', 'auto-draft'].indexOf(getEditedPostAttribute('status')) !== -1
+    isDraft: ['draft', 'auto-draft'].indexOf(getEditedPostAttribute('status')) !== -1,
+    isPostLocked: isPostLocked()
   };
 }), Object(external_wp_data_["withDispatch"])(dispatch => ({
   autosave: dispatch('core/editor').autosave,
@@ -11027,6 +11054,7 @@ const withFontSizes = deprecateFunction('withFontSizes', external_wp_blockEditor
 // CONCATENATED MODULE: ./node_modules/@wordpress/editor/build-module/components/index.js
 // Block Creation Components
  // Post Related Components
+
 
 
 

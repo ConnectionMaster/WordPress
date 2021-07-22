@@ -84,13 +84,16 @@ function register_block_script_handle( $metadata, $field_name ) {
 		substr_replace( $script_path, '.asset.php', - strlen( '.js' ) )
 	);
 	if ( ! file_exists( $script_asset_path ) ) {
-		$message = sprintf(
-			/* translators: %1: field name. %2: block name */
-			__( 'The asset file for the "%1$s" defined in "%2$s" block definition is missing.', 'default' ),
-			$field_name,
-			$metadata['name']
+		_doing_it_wrong(
+			__FUNCTION__,
+			sprintf(
+				/* translators: 1: Field name, 2: Block name. */
+				__( 'The asset file for the "%1$s" defined in "%2$s" block definition is missing.' ),
+				$field_name,
+				$metadata['name']
+			),
+			'5.5.0'
 		);
-		_doing_it_wrong( __FUNCTION__, $message, '5.5.0' );
 		return false;
 	}
 	$script_asset = require $script_asset_path;
@@ -148,11 +151,13 @@ function register_block_style_handle( $metadata, $field_name ) {
 		$style_uri  = includes_url( 'blocks/' . str_replace( 'core/', '', $metadata['name'] ) . "/style$suffix.css" );
 	}
 
-	$style_handle = generate_block_asset_handle( $metadata['name'], $field_name );
-	$block_dir    = dirname( $metadata['file'] );
-	$style_file   = realpath( "$block_dir/$style_path" );
-	$version      = file_exists( $style_file ) ? filemtime( $style_file ) : false;
-	$result       = wp_register_style(
+	$style_handle   = generate_block_asset_handle( $metadata['name'], $field_name );
+	$block_dir      = dirname( $metadata['file'] );
+	$style_file     = realpath( "$block_dir/$style_path" );
+	$has_style_file = false !== $style_file;
+	$version        = ! $is_core_block && isset( $metadata['version'] ) ? $metadata['version'] : false;
+	$style_uri      = $has_style_file ? $style_uri : false;
+	$result         = wp_register_style(
 		$style_handle,
 		$style_uri,
 		array(),
@@ -161,7 +166,7 @@ function register_block_style_handle( $metadata, $field_name ) {
 	if ( file_exists( str_replace( '.css', '-rtl.css', $style_file ) ) ) {
 		wp_style_add_data( $style_handle, 'rtl', 'replace' );
 	}
-	if ( file_exists( $style_file ) ) {
+	if ( $has_style_file ) {
 		wp_style_add_data( $style_handle, 'path', $style_file );
 	}
 
@@ -208,6 +213,18 @@ function register_block_type_from_metadata( $file_or_folder, $args = array() ) {
 	 * @param array $metadata Metadata for registering a block type.
 	 */
 	$metadata = apply_filters( 'block_type_metadata', $metadata );
+
+	// Add `style` and `editor_style` for core blocks if missing.
+	if ( ! empty( $metadata['name'] ) && 0 === strpos( $metadata['name'], 'core/' ) ) {
+		$block_name = str_replace( 'core/', '', $metadata['name'] );
+
+		if ( ! isset( $metadata['style'] ) ) {
+			$metadata['style'] = "wp-block-$block_name";
+		}
+		if ( ! isset( $metadata['editorStyle'] ) ) {
+			$metadata['editorStyle'] = "wp-block-{$block_name}-editor";
+		}
+	}
 
 	$settings          = array();
 	$property_mappings = array(
@@ -693,7 +710,23 @@ function excerpt_remove_blocks( $content ) {
 		'core/verse',
 	);
 
-	$allowed_blocks = array_merge( $allowed_inner_blocks, array( 'core/columns' ) );
+	$allowed_wrapper_blocks = array(
+		'core/columns',
+		'core/column',
+		'core/group',
+	);
+
+	/**
+	 * Filters the list of blocks that can be used as wrapper blocks, allowing
+	 * excerpts to be generated from the `innerBlocks` of these wrappers.
+	 *
+	 * @since 5.8.0
+	 *
+	 * @param array $allowed_wrapper_blocks The list of allowed wrapper blocks.
+	 */
+	$allowed_wrapper_blocks = apply_filters( 'excerpt_allowed_wrapper_blocks', $allowed_wrapper_blocks );
+
+	$allowed_blocks = array_merge( $allowed_inner_blocks, $allowed_wrapper_blocks );
 
 	/**
 	 * Filters the list of blocks that can contribute to the excerpt.
@@ -712,8 +745,8 @@ function excerpt_remove_blocks( $content ) {
 	foreach ( $blocks as $block ) {
 		if ( in_array( $block['blockName'], $allowed_blocks, true ) ) {
 			if ( ! empty( $block['innerBlocks'] ) ) {
-				if ( 'core/columns' === $block['blockName'] ) {
-					$output .= _excerpt_render_inner_columns_blocks( $block, $allowed_inner_blocks );
+				if ( in_array( $block['blockName'], $allowed_wrapper_blocks, true ) ) {
+					$output .= _excerpt_render_inner_blocks( $block, $allowed_blocks );
 					continue;
 				}
 
@@ -736,23 +769,28 @@ function excerpt_remove_blocks( $content ) {
 }
 
 /**
- * Render inner blocks from the `core/columns` block for generating an excerpt.
+ * Render inner blocks from the allowed wrapper blocks
+ * for generating an excerpt.
  *
- * @since 5.2.0
+ * @since 5.8
  * @access private
  *
- * @param array $columns        The parsed columns block.
+ * @param array $parsed_block   The parsed block.
  * @param array $allowed_blocks The list of allowed inner blocks.
  * @return string The rendered inner blocks.
  */
-function _excerpt_render_inner_columns_blocks( $columns, $allowed_blocks ) {
+function _excerpt_render_inner_blocks( $parsed_block, $allowed_blocks ) {
 	$output = '';
 
-	foreach ( $columns['innerBlocks'] as $column ) {
-		foreach ( $column['innerBlocks'] as $inner_block ) {
-			if ( in_array( $inner_block['blockName'], $allowed_blocks, true ) && empty( $inner_block['innerBlocks'] ) ) {
-				$output .= render_block( $inner_block );
-			}
+	foreach ( $parsed_block['innerBlocks'] as $inner_block ) {
+		if ( ! in_array( $inner_block['blockName'], $allowed_blocks, true ) ) {
+			continue;
+		}
+
+		if ( empty( $inner_block['innerBlocks'] ) ) {
+			$output .= render_block( $inner_block );
+		} else {
+			$output .= _excerpt_render_inner_blocks( $inner_block, $allowed_blocks );
 		}
 	}
 
@@ -943,9 +981,8 @@ function unregister_block_style( $block_name, $block_style_name ) {
  *
  * @param WP_Block_Type $block_type Block type to check for support.
  * @param string        $feature    Name of the feature to check support for.
- * @param mixed         $default    Fallback value for feature support, defaults to false.
- *
- * @return boolean                  Whether or not the feature is supported.
+ * @param mixed         $default    Optional. Fallback value for feature support. Default false.
+ * @return bool Whether the feature is supported.
  */
 function block_has_support( $block_type, $feature, $default = false ) {
 	$block_support = $default;
@@ -954,6 +991,58 @@ function block_has_support( $block_type, $feature, $default = false ) {
 	}
 
 	return true === $block_support || is_array( $block_support );
+}
+
+/**
+ * Converts typography keys declared under `supports.*` to `supports.typography.*`.
+ *
+ * Displays a `_doing_it_wrong()` notice when a block using the older format is detected.
+ *
+ * @since 5.8.0
+ *
+ * @param array $metadata Metadata for registering a block type.
+ * @return array Filtered metadata for registering a block type.
+ */
+function wp_migrate_old_typography_shape( $metadata ) {
+	if ( ! isset( $metadata['supports'] ) ) {
+		return $metadata;
+	}
+
+	$typography_keys = array(
+		'__experimentalFontFamily',
+		'__experimentalFontStyle',
+		'__experimentalFontWeight',
+		'__experimentalLetterSpacing',
+		'__experimentalTextDecoration',
+		'__experimentalTextTransform',
+		'fontSize',
+		'lineHeight',
+	);
+
+	foreach ( $typography_keys as $typography_key ) {
+		$support_for_key = _wp_array_get( $metadata['supports'], array( $typography_key ), null );
+
+		if ( null !== $support_for_key ) {
+			_doing_it_wrong(
+				'register_block_type_from_metadata()',
+				sprintf(
+					/* translators: 1: Block type, 2: Typography supports key, e.g: fontSize, lineHeight, etc. 3: block.json, 4: Old metadata key, 5: New metadata key. */
+					__( 'Block "%1$s" is declaring %2$s support in %3$s file under %4$s. %2$s support is now declared under %5$s.' ),
+					$metadata['name'],
+					"<code>$typography_key</code>",
+					'<code>block.json</code>',
+					"<code>supports.$typography_key</code>",
+					"<code>supports.typography.$typography_key</code>"
+				),
+				'5.8.0'
+			);
+
+			_wp_array_set( $metadata['supports'], array( 'typography', $typography_key ), $support_for_key );
+			unset( $metadata['supports'][ $typography_key ] );
+		}
+	}
+
+	return $metadata;
 }
 
 /**
@@ -978,8 +1067,11 @@ function build_query_vars_from_query_block( $block, $page ) {
 	);
 
 	if ( isset( $block->context['query'] ) ) {
-		if ( isset( $block->context['query']['postType'] ) ) {
-			$query['post_type'] = $block->context['query']['postType'];
+		if ( ! empty( $block->context['query']['postType'] ) ) {
+			$post_type_param = $block->context['query']['postType'];
+			if ( is_post_type_viewable( $post_type_param ) ) {
+				$query['post_type'] = $post_type_param;
+			}
 		}
 		if ( isset( $block->context['query']['sticky'] ) && ! empty( $block->context['query']['sticky'] ) ) {
 			$sticky = get_option( 'sticky_posts' );
@@ -989,29 +1081,54 @@ function build_query_vars_from_query_block( $block, $page ) {
 				$query['post__not_in'] = array_merge( $query['post__not_in'], $sticky );
 			}
 		}
-		if ( isset( $block->context['query']['exclude'] ) ) {
-			$query['post__not_in'] = array_merge( $query['post__not_in'], $block->context['query']['exclude'] );
+		if ( ! empty( $block->context['query']['exclude'] ) ) {
+			$excluded_post_ids     = array_map( 'intval', $block->context['query']['exclude'] );
+			$excluded_post_ids     = array_filter( $excluded_post_ids );
+			$query['post__not_in'] = array_merge( $query['post__not_in'], $excluded_post_ids );
 		}
-		if ( isset( $block->context['query']['perPage'] ) ) {
-			$query['offset']         = ( $block->context['query']['perPage'] * ( $page - 1 ) ) + $block->context['query']['offset'];
-			$query['posts_per_page'] = $block->context['query']['perPage'];
+		if (
+			isset( $block->context['query']['perPage'] ) &&
+			is_numeric( $block->context['query']['perPage'] )
+		) {
+			$per_page = absint( $block->context['query']['perPage'] );
+			$offset   = 0;
+
+			if (
+				isset( $block->context['query']['offset'] ) &&
+				is_numeric( $block->context['query']['offset'] )
+			) {
+				$offset = absint( $block->context['query']['offset'] );
+			}
+
+			$query['offset']         = ( $per_page * ( $page - 1 ) ) + $offset;
+			$query['posts_per_page'] = $per_page;
 		}
-		if ( isset( $block->context['query']['categoryIds'] ) ) {
-			$query['category__in'] = $block->context['query']['categoryIds'];
+		if ( ! empty( $block->context['query']['categoryIds'] ) ) {
+			$term_ids              = array_map( 'intval', $block->context['query']['categoryIds'] );
+			$term_ids              = array_filter( $term_ids );
+			$query['category__in'] = $term_ids;
 		}
-		if ( isset( $block->context['query']['tagIds'] ) ) {
-			$query['tag__in'] = $block->context['query']['tagIds'];
+		if ( ! empty( $block->context['query']['tagIds'] ) ) {
+			$term_ids         = array_map( 'intval', $block->context['query']['tagIds'] );
+			$term_ids         = array_filter( $term_ids );
+			$query['tag__in'] = $term_ids;
 		}
-		if ( isset( $block->context['query']['order'] ) ) {
+		if (
+			isset( $block->context['query']['order'] ) &&
+				in_array( strtoupper( $block->context['query']['order'] ), array( 'ASC', 'DESC' ), true )
+		) {
 			$query['order'] = strtoupper( $block->context['query']['order'] );
 		}
 		if ( isset( $block->context['query']['orderBy'] ) ) {
 			$query['orderby'] = $block->context['query']['orderBy'];
 		}
-		if ( isset( $block->context['query']['author'] ) ) {
-			$query['author'] = $block->context['query']['author'];
+		if (
+			isset( $block->context['query']['author'] ) &&
+			(int) $block->context['query']['author'] > 0
+		) {
+			$query['author'] = (int) $block->context['query']['author'];
 		}
-		if ( isset( $block->context['query']['search'] ) ) {
+		if ( ! empty( $block->context['query']['search'] ) ) {
 			$query['s'] = $block->context['query']['search'];
 		}
 	}
